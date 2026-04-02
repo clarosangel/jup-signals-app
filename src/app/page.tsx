@@ -3,6 +3,15 @@
 import { useState, useEffect, useCallback } from 'react';
 import { RISK_RULES } from '@/lib/types';
 
+interface CandleData {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
 interface MarketData {
   overview: {
     prices: Array<{ pair: string; price: number; change24h: number; volume24h: number }>;
@@ -12,6 +21,7 @@ interface MarketData {
   };
   analyses: Array<{
     pair: string;
+    candles?: CandleData[];
     ema: {
       ema20: number;
       ema200: number;
@@ -75,6 +85,134 @@ interface Trade {
 function getDirectionalConfidence(strength: number, recommendation: string): number {
   const isShort = recommendation === 'STRONG_SHORT' || recommendation === 'SHORT';
   return isShort ? 100 - strength : strength;
+}
+
+// Calculate EMA from close prices (client-side for chart)
+function calcEMA(closes: number[], period: number): number[] {
+  if (closes.length < period) return [];
+  const ema: number[] = [];
+  const k = 2 / (period + 1);
+  let sum = 0;
+  for (let i = 0; i < period; i++) sum += closes[i];
+  ema.push(sum / period);
+  for (let i = period; i < closes.length; i++) {
+    ema.push((closes[i] - ema[ema.length - 1]) * k + ema[ema.length - 1]);
+  }
+  return ema;
+}
+// Mini candlestick chart with EMA lines
+function CandleChart({ candles, ema20Val, ema200Val, pair }: { candles: CandleData[]; ema20Val: number; ema200Val: number; pair: string }) {
+  if (!candles || candles.length < 5) return <p className="text-gray-600 text-xs">Sin datos de velas</p>;
+
+  const W = 400, H = 180, PAD = { top: 10, bottom: 25, left: 50, right: 10 };
+  const chartW = W - PAD.left - PAD.right;
+  const chartH = H - PAD.top - PAD.bottom;
+
+  const allHighs = candles.map(c => c.high);
+  const allLows = candles.map(c => c.low);
+  let minP = Math.min(...allLows, ema20Val, ema200Val);
+  let maxP = Math.max(...allHighs, ema20Val, ema200Val);
+  const range = maxP - minP || 1;
+  minP -= range * 0.05;
+  maxP += range * 0.05;
+  const pRange = maxP - minP;
+
+  const yScale = (price: number) => PAD.top + chartH - ((price - minP) / pRange) * chartH;
+  const candleW = Math.max(2, (chartW / candles.length) * 0.6);
+  const gap = chartW / candles.length;
+
+  // Calculate EMAs from candle closes for the chart line
+  const closes = candles.map(c => c.close);
+  const ema20Arr = calcEMA(closes, Math.min(20, Math.floor(closes.length * 0.4)));
+  const ema200Arr = calcEMA(closes, Math.min(closes.length - 1, Math.floor(closes.length * 0.8)));
+
+  const makeLinePath = (values: number[], offset: number) => {
+    if (values.length < 2) return '';
+    return values.map((v, i) => {
+      const x = PAD.left + (i + offset) * gap + gap / 2;
+      const y = yScale(v);
+      return `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+  };
+
+  const ema20Offset = candles.length - ema20Arr.length;
+  const ema200Offset = candles.length - ema200Arr.length;
+
+  // Price grid lines
+  const gridCount = 4;
+  const gridLines = Array.from({ length: gridCount + 1 }, (_, i) => {
+    const price = minP + (pRange * i) / gridCount;
+    return { y: yScale(price), price };
+  });
+
+  // Time labels
+  const timeLabels: { x: number; label: string }[] = [];
+  const step = Math.max(1, Math.floor(candles.length / 5));
+  for (let i = 0; i < candles.length; i += step) {
+    const d = new Date(candles[i].time);
+    timeLabels.push({
+      x: PAD.left + i * gap + gap / 2,
+      label: `${d.getDate()}/${d.getMonth() + 1}`,
+    });
+  }
+
+  return (
+    <div className="w-full">
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" preserveAspectRatio="xMidYMid meet">
+        {/* Background */}
+        <rect x={PAD.left} y={PAD.top} width={chartW} height={chartH} fill="#111827" rx="4" />
+
+        {/* Grid lines & price labels */}
+        {gridLines.map((g, i) => (
+          <g key={i}>
+            <line x1={PAD.left} y1={g.y} x2={W - PAD.right} y2={g.y} stroke="#1f2937" strokeWidth="0.5" />
+            <text x={PAD.left - 4} y={g.y + 3} fill="#6b7280" fontSize="7" textAnchor="end">
+              {pair === 'WBTC' ? `${(g.price / 1000).toFixed(1)}k` : g.price.toFixed(pair === 'SOL' ? 1 : 0)}
+            </text>
+          </g>
+        ))}
+
+        {/* Time labels */}
+        {timeLabels.map((t, i) => (
+          <text key={i} x={t.x} y={H - 5} fill="#6b7280" fontSize="6" textAnchor="middle">{t.label}</text>
+        ))}
+
+        {/* Candlesticks */}
+        {candles.map((c, i) => {
+          const x = PAD.left + i * gap + gap / 2;
+          const isGreen = c.close >= c.open;
+          const color = isGreen ? '#22c55e' : '#ef4444';
+          const bodyTop = yScale(Math.max(c.open, c.close));
+          const bodyBot = yScale(Math.min(c.open, c.close));
+          const bodyH = Math.max(0.5, bodyBot - bodyTop);
+          return (
+            <g key={i}>
+              {/* Wick */}
+              <line x1={x} y1={yScale(c.high)} x2={x} y2={yScale(c.low)} stroke={color} strokeWidth="0.5" />
+              {/* Body */}
+              <rect x={x - candleW / 2} y={bodyTop} width={candleW} height={bodyH} fill={color} rx="0.3" />
+            </g>
+          );
+        })}
+
+        {/* EMA 200 line (blue) */}
+        {ema200Arr.length > 1 && (
+          <path d={makeLinePath(ema200Arr, ema200Offset)} fill="none" stroke="#3b82f6" strokeWidth="1.2" strokeDasharray="3,2" opacity="0.8" />
+        )}
+
+        {/* EMA 20 line (orange) */}
+        {ema20Arr.length > 1 && (
+          <path d={makeLinePath(ema20Arr, ema20Offset)} fill="none" stroke="#f97316" strokeWidth="1.2" opacity="0.9" />
+        )}
+
+        {/* Legend */}
+        <line x1={PAD.left + 5} y1={PAD.top + 6} x2={PAD.left + 18} y2={PAD.top + 6} stroke="#f97316" strokeWidth="1.5" />
+        <text x={PAD.left + 21} y={PAD.top + 9} fill="#f97316" fontSize="6.5" fontWeight="bold">EMA 20</text>
+        <line x1={PAD.left + 55} y1={PAD.top + 6} x2={PAD.left + 68} y2={PAD.top + 6} stroke="#3b82f6" strokeWidth="1.5" strokeDasharray="3,2" />
+        <text x={PAD.left + 71} y={PAD.top + 9} fill="#3b82f6" fontSize="6.5" fontWeight="bold">EMA 200</text>
+      </svg>
+    </div>
+  );
 }
 
 export default function Dashboard() {
@@ -158,7 +296,7 @@ export default function Dashboard() {
           </div>
           <div className="flex items-center gap-4">
             <div className="text-right">
-              <p className="text-xs text-gray-500">Sesión</p>
+              <p className="text-xs text-gray-500">Sesion</p>
               <p className="text-sm font-semibold text-blue-400">{data?.session || '—'}</p>
             </div>
             <div className="text-right">
@@ -182,7 +320,7 @@ export default function Dashboard() {
           <div className={`rounded-xl p-6 border-2 ${data.topPick.direction === 'SHORT' ? 'border-red-500 bg-red-950/20' : 'border-green-500 bg-green-950/20'}`}>
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
-                <span className={`text-xs font-bold px-3 py-1 rounded-full ${data.topPick.direction === 'SHORT' ? 'bg-red-500 text-white' : 'bg-green-500 text-black'}`}>RECOMENDACIÓN</span>
+                <span className={`text-xs font-bold px-3 py-1 rounded-full ${data.topPick.direction === 'SHORT' ? 'bg-red-500 text-white' : 'bg-green-500 text-black'}`}>RECOMENDACION</span>
                 <span className="text-sm text-gray-400">{data.topPick.reason}</span>
               </div>
               <div className="text-right">
@@ -213,7 +351,7 @@ export default function Dashboard() {
                 { label: `TP1 (+${tp1Pct}%)`, value: `$${data.topPick.takeProfit1.toFixed(2)}`, color: 'text-green-400' },
                 { label: `TP2 (+${tp2Pct}%)`, value: `$${data.topPick.takeProfit2.toFixed(2)}`, color: 'text-blue-400' },
                 { label: 'Collateral', value: `$${data.topPick.collateral}`, color: 'text-orange-400' },
-                { label: 'Liquidación', value: `$${data.topPick.liquidationPrice.toFixed(2)}`, color: 'text-red-400' },
+                { label: 'Liquidacion', value: `$${data.topPick.liquidationPrice.toFixed(2)}`, color: 'text-red-400' },
               ].map(item => (
                 <div key={item.label} className="bg-gray-900/50 rounded-lg p-3">
                   <p className="text-xs text-gray-500">{item.label}</p>
@@ -227,9 +365,9 @@ export default function Dashboard() {
             <div className="flex items-center gap-3">
               <span className="text-2xl">⏸️</span>
               <div>
-                <p className="text-xl font-bold text-yellow-400">Sin señal clara — ESPERAR</p>
+                <p className="text-xl font-bold text-yellow-400">Sin senal clara — ESPERAR</p>
                 <p className="text-sm text-gray-400">
-                  {data?.allRed ? 'Todos los activos en rojo — mercado en pánico' : data?.noTradeZone ? 'Fear & Greed extremo — no trade zone' : 'No hay confluencia técnica suficiente'}
+                  {data?.allRed ? 'Todos los activos en rojo — mercado en panico' : data?.noTradeZone ? 'Fear & Greed extremo — no trade zone' : 'No hay confluencia tecnica suficiente'}
                 </p>
               </div>
             </div>
@@ -237,204 +375,220 @@ export default function Dashboard() {
         )}
 
         {/* Macro Overview */}
-        {div className="grid grid-cols-2 1d:grid-cols-6 4ap-4">
-            iv className="gr-gray-900 bounded-xl p-6 4order-yorder-gray-800 p
-            <diclassName="text-xs text-gray-500">b-4"1">ar & Greed exIed-/p>
-               className={`text-lgl font-bold ${datFearColor =(ta?.noerview: .arGreed: alue}<| '�50)}>
-                {ta?.noerview: .arGreed: alue}<| '—'}</           </di
-               className={`ext-sm text-gray-400">{data.tnoerview: .arGreed: aassification: /p>
-            div>
-          <div className="fl-gray-900 bounded-xl p-6 4order-yorder-gray-800 p
-            <diclassName="text-xs text-gray-500">b-4"1">BTC minance: di
-               className={`ext-sml font-bold text-yeange-400' {da(ta?.noerview: .cDominance: | 0) >oFixed(2)1%
- di
-               className={`ext-sm text-gray-400">{da(ta?.noerview: .cDominance: | 0) > > 55 'FeBTC Sson}<: 'NoAlt Sson}< posible</p>
-            div>
-          <div className="fl-gray-900 bounded-xl p-6 4order-yorder-gray-800 p
-            <diclassName="text-xs text-gray-500">b-4"1">P&L TalPnp>
-               className={`text-lgl font-bold ${datalPnl =  700 'text-reeen-400' },'text-red-400' }}>
- datalPnl =oFixed(2)}`,di
-               className={`ext-sm text-gray-400">{daades.length *}rades.l | WR: {nRate =oFixed(0);
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+            <p className="text-xs text-gray-500 mb-1">Fear & Greed Index</p>
+            <p className={`text-3xl font-bold ${getFearColor(data?.overview.fearGreed.value || 50)}`}>
+              {data?.overview.fearGreed.value || '—'}
+            </p>
+            <p className="text-sm text-gray-400">{data?.overview.fearGreed.classification}</p>
+          </div>
+          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+            <p className="text-xs text-gray-500 mb-1">BTC Dominance</p>
+            <p className="text-3xl font-bold text-orange-400">{(data?.overview.btcDominance || 0).toFixed(1)}%</p>
+            <p className="text-sm text-gray-400">{(data?.overview.btcDominance || 0) > 55 ? 'BTC Season' : 'Alt Season posible'}</p>
+          </div>
+          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
+            <p className="text-xs text-gray-500 mb-1">P&L Total</p>
+            <p className={`text-3xl font-bold ${totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>$${totalPnl.toFixed(2)}</p>
+            <p className="text-sm text-gray-400">{trades.length} trades | WR: {winRate.toFixed(0)}%</p>
+          </div>
+          <div className={`bg-gray-900 rounded-xl p-4 border ${data?.noTradeZone ? 'border-red-500 bg-red-950/30' : 'border-gray-800'}`}>
+            <p className="text-xs text-gray-500 mb-1">Macro Risk</p>
+            <p className={`text-2xl font-bold ${data?.macroRisk?.includes('EXTREME') ? 'text-red-400' : data?.macroRisk?.includes('FEAR') ? 'text-orange-400' : 'text-green-400'}`}>
+              {data?.macroRisk?.replace('_', ' ') || '—'}
+            </p>
+            {data?.noTradeZone && <p className="text-sm text-red-400 font-semibold animate-pulse">NO TRADE ZONE</p>}
+          </div>
+        </div>
 
- di
-            div>
-          <div className="f{`-gray-900 bounded-xl p-6 4order-yo${ta?.noTradeZone ? 'Ferder-red-500 bg-red-950/203 : 'border-gree-800'}`}
-             <diclassName="text-xs text-gray-500">b-4"1">cro Ovsk: p>
-               className={`text-lg2 font-bold ${data.t?.croRisk: ?.inclus.l('EXTREME') 'text-red-400' : 'tta.t?.croRisk: ?.inclus.l('FEAR') 'text-reange-400' },'text-green-400'}`}>{d               {ta?.nocroRisk: ?.replace('_ va' ')  '—'}</           </di
-              {ta?.noTradeZone ? &&  className={`ext-sm text-grd-400 bont-semibold teimate-sppulse">NO TRADE ZONEdi
- }           div>
-          div>
-         {/* Maice.t Cards/}
-        {div className="grid grid-cols-2 1d:grid-cols-6 3ap-4">
-            ata.tnoerview: .ices: ap(itp> (
-              iv key={itpair}</lassName="f{`-gray-900 bounded-xl p-6 4order-yo${ta?.nopPick.l?air}<== 'Spair}< 'Ferder-red-500 b/6 : 'border-gree-800'}`}
-             <d<div className="flex items-center justify-between mb-4"2
-                <p v className="flex items-center gap-3"2
-                <p<span className="text-2x font-bold ${dapair}</span>
-                <s{data?.topPick ??air}<== 'Spair}< &&                 <d<p<span className="text-2x font-bold px-3 2y-1 0 rounded-lgll ${-red-500 text-white' ">TOP PICKspan>
-                <s{d
-              cl</div>
-              ))<span className={`text-3x font-semibold te$apaange24h:   700 'text-reeen-400' },'text-red-400' }}>
-                <s{dapaange24h:   700 'te+},'te'}apaange24h: oFixed(2)}`,                </p>an>
+        {/* Price Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {data?.overview.prices.map(p => (
+            <div key={p.pair} className={`bg-gray-900 rounded-xl p-4 border ${data?.topPick?.pair === p.pair ? 'border-red-500/60' : 'border-gray-800'}`}>
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-lg font-bold">{p.pair}</span>
+                  {data?.topPick?.pair === p.pair && (
+                    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-red-500 text-white">TOP PICK</span>
+                  )}
+                </div>
+                <span className={`text-sm font-semibold ${p.change24h >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                  {p.change24h >= 0 ? '+' : ''}{p.change24h.toFixed(2)}%
+                </span>
               </div>
-              <diclassName={`ext-sm2 font-bold">{d$apapce.toFicaleTiring()}ded-fined, { nanimumFraion}<Digits: 2, maximumFraion}<Digits: 2 }`,di
-              <p className="text-xs text-gray-500">{iVol:e$a(p.lume24h:  / 1e6>oFixed(2)1%
-Mp>
+              <p className="text-2xl font-bold">$${p.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+              <p className="text-xs text-gray-500">Vol: $${(p.volume24h / 1e6).toFixed(1)}M</p>
             </div>
-            }
-          div>
-         {/* Magnals< Cards/}
-        {div c          <dih2lassName="text-2x font-bold $b-4"3ext-gray-300">{lAnálisis EMA Cross 220'}0</h2          <div className="flid grid-cols-2 1d:grid-cols-6 3ap-4">
-            {data?.alllyses: ap(ita> {
-    ifffffffffffnst isShort = rea.ema?.remmendation === 'STRONG_SHORT' || rea.ema?.remmendation === 'STRRT';
-  reifffffffffffnst isdirnfidence(d rea.ema 'ttDirectionalConfidence(daa.ema.rength;
-,ea.ema.remmendation =) 0;
+          ))}
+        </div>
 
- reifffffffffffturn (
-      <d        <div cly={itaair}</lassName="fl-gray-900 bounded-xl p-6 5order-yorder-gray-800 p
-            <d    <div className="flex items-center justify-between mb-4">
-                  <p<span className="text-2x font-bold ${daaair}</span>
-                <s{d{daa.ema &&                 <d<p<s<span className={`text-xs font-bomibold te-3 2y-1 rounded-full ${rder-yo${tSignalColor =(a.ema.remmendation =)}>
-                <s{d<s{d{daa.ema.remmendation =.replace('_ va' ')              cl</<p<s<sppan>
-                <s{d{d)              cl</<pdiv>
-              ))<s{daa.ema ?                 <d<p<sp                <s{d<s{div className="flace-y-6"2b-4">
-                  <p<s<s{div className="flex itstify-between mbxt-sm">Re                 <p<s<s{d<span className="text-2xay-400">{dEMA 20ppan>
-                <s{d{d<s{d<span className="text-2xange-400' {d$aa.ema.a200:oFixed(2)}`,dian>
-                <s{d{d<s{ddiv>
-              ))<s{d<s<s{div className="flex itstify-between mbxt-sm">Re                 <p<s<s{d<span className="text-2xay-400">{dEMA 200ppan>
-                <s{d{d<s{d<span className="text-2xue-400">{d$aa.ema.a200::oFixed(2)}`,dian>
-                <s{d{d<s{ddiv>
-              ))<s{d<s<s{div className="flex itstify-between mbxt-sm">Re                 <p<s<s{d<span className="text-2xay-400">{dCrossppan>
-                <s{d{d<s{d<span className="taa.ema.gnal: == 'STGOLDEN_CROSS' 'text-reeen-400' },'ta.ema.gnal: == 'STDEATH_CROSS' 'text-red-400' : 'text-gree-400">'
-                <s{d<s{d{dddddaa.ema.gnal: == 'STGOLDEN_CROSS' 'teGd ten},'ta.ema.gnal: == 'STDEATH_CROSS' 'teDeath: 'No eutl',               cl</<p<s<s<s{ddian>
-                <s{d{d<s{ddiv>
-              ))<s{d<s<s{div className="flex itstify-between mbxt-sm">Re                 <p<s<s{d<span className="text-2xay-400">{dvs EMA20ppan>
-                <s{d{d<s{d<span className="taa.ema.iceVsEMA200:== 'STABOVE' 'text-reeen-400' },'text-red-400' }}>aa.ema.iceVsEMA200:,dian>
-                <s{d{d<s{ddiv>
-              ))<s{d<s<s{daa.ema.de?: &&                 <d<p<s<s<s{div className="flex itstify-between mbxt-sm">Re                 <p<s<s{d<s<span className="text-2xay-400">{dModoppan>
-                <s{d{d<s{d<s<span className="text-2xpurpl400' {daa.ema.de?:.replace('_ va' ') ppan>
-                <s{d{d<s{d<spiv>
-              ))<s{d<s<s{d)              cl</<p<s<s{daa.ema.lumeConfirm?: ! 'Sded-fined &&                 <d<p<s<s<s{div className="flex itstify-between mbxt-sm">Re                 <p<s<s{d<s<span className="text-2xay-400">{dVumeConppan>
-                <s{d{d<s{d<s<span className="taa.ema.lumeConfirm?: 'text-reeen-400' },'text-rellow-400'
- 
-                <s{d<s{d{ddddd{daa.ema.lumeConfirm?: 'te✓ nfirm?:ad : da'⚠ Bajo               cl</<p<s<s<s{d{ddian>
-                <s{d{d<s{d<spiv>
-              ))<s{d<s<s{d)              cl</<p<s<spiv>
-              ))<s{d<s<siv className="max4">
-                  <p<s<s{div className="flex itstify-between mbxt-sm text-gray-500">b-4"1">               <s{d{d<s{d<span confianza</ recticnalCoppan>
-                <s{d{d<s{d<span c>{dirnfidence(doFixed(0);
+        {/* Signal Cards */}
+        <div>
+          <h2 className="text-lg font-bold mb-3 text-gray-300">Analisis EMA Cross 20/200</h2>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {data?.analyses.map(a => {
+              const isShort = a.ema?.recommendation === 'STRONG_SHORT' || a.ema?.recommendation === 'SHORT';
+              const dirConfidence = a.ema ? getDirectionalConfidence(a.ema.strength, a.ema.recommendation) : 0;
+              return (
+                <div key={a.pair} className="bg-gray-900 rounded-xl p-5 border border-gray-800">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-lg font-bold">{a.pair}</span>
+                    {a.ema && (
+                      <span className={`text-xs font-semibold px-2 py-1 rounded-full border ${getSignalColor(a.ema.recommendation)}`}>
+                        {a.ema.recommendation.replace('_', ' ')}
+                      </span>
+                    )}
+                  </div>
+                  {a.ema ? (
+                    <>
+                      {/* Candlestick Chart with EMAs */}
+                      {a.candles && a.candles.length > 5 && (
+                        <div className="mb-3 bg-gray-950 rounded-lg p-2 border border-gray-800">
+                          <CandleChart candles={a.candles} ema20Val={a.ema.ema20} ema200Val={a.ema.ema200} pair={a.pair} />
+                        </div>
+                      )}
+                      <div className="space-y-2 mb-3">
+                        <div className="flex justify-between text-sm">
+                          <span className="text-gray-400">EMA 20</span>
+                          <span className="text-orange-400">$${a.ema.ema20.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-gray-400">EMA 200</span>
+                          <span className="text-blue-400">$${a.ema.ema200.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-gray-400">Cross</span>
+                          <span className={a.ema.signal === 'GOLDEN_CROSS' ? 'text-green-400' : a.ema.signal === 'DEATH_CROSS' ? 'text-red-400' : 'text-gray-400'}>
+                            {a.ema.signal === 'GOLDEN_CROSS' ? 'Golden' : a.ema.signal === 'DEATH_CROSS' ? 'Death' : 'Neutral'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-gray-400">vs EMA20</span>
+                          <span className={a.ema.priceVsEMA20 === 'ABOVE' ? 'text-green-400' : 'text-red-400'}>{a.ema.priceVsEMA20}</span>
+                        </div>
+                        {a.ema.mode && (
+                          <div className="flex justify-between text-sm">
+                            <span className="text-gray-400">Modo</span>
+                            <span className="text-purple-400">{a.ema.mode.replace('_', ' ')}</span>
+                          </div>
+                        )}
+                        {a.ema.volumeConfirm !== undefined && (
+                          <div className="flex justify-between text-sm">
+                            <span className="text-gray-400">Volumen</span>
+                            <span className={a.ema.volumeConfirm ? 'text-green-400' : 'text-yellow-400'}>
+                              {a.ema.volumeConfirm ? 'Confirmado' : 'Bajo'}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="mb-3">
+                        <div className="flex justify-between text-xs text-gray-500 mb-1">
+                          <span>Confianza Direccional</span>
+                          <span>{dirConfidence.toFixed(0)}%</span>
+                        </div>
+                        <div className="w-full bg-gray-700 rounded-full h-2">
+                          <div
+                            className={`h-2 rounded-full ${
+                              dirConfidence >= 70
+                                ? (isShort ? 'bg-red-500' : 'bg-green-500')
+                                : dirConfidence >= 50
+                                  ? 'bg-yellow-500'
+                                  : 'bg-gray-500'
+                            }`}
+                            style={{ width: `${dirConfidence}%` }}
+                          />
+                        </div>
+                      </div>
+                      {a.signal && (
+                        <div className={`mt-3 p-3 rounded-lg border ${isShort ? 'bg-red-950/30 border-red-800' : 'bg-gray-800 border-gray-700'}`}>
+                          <p className={`text-xs font-bold mb-2 ${isShort ? 'text-red-400' : 'text-green-400'}`}>SENAL ACTIVA - {a.signal.direction}</p>
+                          <div className="grid grid-cols-2 gap-1 text-xs">
+                            <span className="text-gray-500">Entry:</span><span className="text-right">$${a.signal.entry.toFixed(2)}</span>
+                            <span className="text-gray-500">SL:</span><span className="text-right text-red-400">$${a.signal.stopLoss.toFixed(2)}</span>
+                            <span className="text-gray-500">TP1:</span><span className="text-right text-green-400">$${a.signal.takeProfit1.toFixed(2)}</span>
+                            <span className="text-gray-500">TP2:</span><span className="text-right text-green-400">$${a.signal.takeProfit2.toFixed(2)}</span>
+                            <span className="text-gray-500">Leverage:</span><span className="text-right text-yellow-400">{a.signal.leverage}x</span>
+                            <span className="text-gray-500">R:R:</span><span className="text-right">{a.signal.riskReward}:1</span>
+                            <span className="text-gray-500">Liq:</span><span className="text-right text-red-400">$${a.signal.liquidationPrice.toFixed(2)}</span>
+                          </div>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-gray-500 text-sm">Insuficientes datos para EMA200</p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
 
- dian>
-                <s{d{d<s{ddiv>
-              ))<s{d<s<s{div className="flwgll ${-reay-700 rounded-lgll h-122
-                <p<s{d<s<s{div c             cl</<p<s<s<s{d{dassName={`te122ounded-full ${da               <s{d<s{d{ddddd{ddirnfidence(d  70
-                    ?             ?  Short ? 10g-red-500 t: 'bg-green-500 t
-                    :             :ddirnfidence(d  705                    ?               10g-rellow-500/5                }`    :             :dg-gray-500/1                }`    :       }
-            >
+        {/* Risk Rules */}
+        <div className="bg-gray-900 rounded-xl p-5 border border-gray-800">
+          <h2 className="text-lg font-bold mb-3 text-gray-300">Risk Management Rules</h2>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+            {[
+              { label: 'Max Leverage', value: `${RISK_RULES.maxLeverage}x`, color: 'text-yellow-400' },
+              { label: 'Max Collateral', value: `${RISK_RULES.maxCollateralPercent * 100}%`, color: 'text-blue-400' },
+              { label: 'Stop Loss', value: `-${RISK_RULES.stopLossPercent * 100}%`, color: 'text-red-400' },
+              { label: 'Max Daily Loss', value: `$${RISK_RULES.maxDailyLoss}`, color: 'text-red-400' },
+              { label: 'Max Positions', value: `${RISK_RULES.maxSimultaneousPositions}`, color: 'text-purple-400' },
+              { label: 'TP1 / TP2', value: `+${tp1Pct}% / +${tp2Pct}%`, color: 'text-green-400' },
+              { label: 'Max Streak Loss', value: `${RISK_RULES.maxConsecutiveLosses}`, color: 'text-orange-400' },
+              { label: 'Cooldown', value: `${RISK_RULES.cooldownMinutes}min`, color: 'text-cyan-400' },
+            ].map(r => (
+              <div key={r.label} className="bg-gray-800 rounded-lg p-3">
+                <p className="text-gray-500 text-xs">{r.label}</p>
+                <p className={`${r.color} font-bold text-lg`}>{r.value}</p>
+              </div>
+            ))}
+          </div>
+        </div>
 
+        {/* Trade History */}
+        <div className="bg-gray-900 rounded-xl p-5 border border-gray-800">
+          <h2 className="text-lg font-bold mb-3 text-gray-300">Historial de Trades</h2>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-gray-500 border-b border-gray-800">
+                  {['Fecha', 'Par', 'Dir', 'Entry', 'Exit', 'Lev', 'Collateral', 'PnL', 'Status'].map(h => (
+                    <th key={h} className="py-2 px-3 text-left">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {trades.map(t => (
+                  <tr key={t.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
+                    <td className="py-2 px-3 text-gray-400">{t.time}</td>
+                    <td className="py-2 px-3 font-semibold">{t.pair}</td>
+                    <td className="py-2 px-3">
+                      <span className={`px-2 py-0.5 rounded text-xs font-semibold ${t.direction === 'LONG' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                        {t.direction}
+                      </span>
+                    </td>
+                    <td className="py-2 px-3">$${t.entry.toLocaleString()}</td>
+                    <td className="py-2 px-3">{t.exit ? `$${t.exit.toLocaleString()}` : '—'}</td>
+                    <td className="py-2 px-3 text-yellow-400">{t.leverage}x</td>
+                    <td className="py-2 px-3">$${t.collateral.toFixed(2)}</td>
+                    <td className={`py-2 px-3 font-bold ${(t.pnl || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                      {t.pnl !== null ? `${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}` : '—'}
+                    </td>
+                    <td className="py-2 px-3">
+                      <span className="px-2 py-0.5 rounded text-xs bg-gray-500/20 text-gray-400">{t.status}</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-styl{`t{ wid: nu`${dirnfidence(d}%` }            >
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-/                <s{d{d<s{ddiv>
-              ))<s{d<s<sdiv>
-              ))<s{d<s<s{a.gnal: =&&                 <d<p<s<s<siv className="f{`mt py- pyunded-lg p-rder-yo${Short ? 10g-red-500/203 order-red-508' : 'bg-gray-800'}order-gray-807' }}>
-                <s{d<p<s<s<siclassName={`text-xl sont-bold $b-4"2o${Short ? 10gxt-red-400' : 'text-green-400'}`}>{dSEÑAL ACTIVA�� no{a.gnal: irection}</sp
-                  <p<p<s<s<siv className="frid grid-cols-2 mdp-4"1bxt-sm tRe                 <p<s<s{d<s<span className="text-2xay-400">{itry',:dian>
- pan className="text-2xght">
- ${a.gnal: itry.toFixed(2)}`,ppan>
-                <s{d{d<s{d<s<span className="text-2xay-500">SesL:dian>
- pan className="text-2xght">ext-grd-400 b
- ${a.gnal: iopLoss.toFixed(2)}`,ppan>
-                <s{d{d<s{d<s<span className="text-2xay-500">SeTP1:dian>
- pan className="text-2xght">ext-green-400'}
- ${a.gnal: ikeProfit1.toFixed(2)}`,ppan>
-                <s{d{d<s{d<s<span className="text-2xay-500">SeTP2:dian>
- pan className="text-2xght">ext-green-400'}
- ${a.gnal: ikeProfit1.2oFixed(2)}`,ppan>
-                <s{d{d<s{d<s<span className="text-2xay-500">Severage</:dian>
- pan className="text-2xght">ext-grllow-400">{daa.gnal: iverage}x</p>an>
-                <s{d{d<s{d<s<span className="text-2xay-500">SeR:R:dian>
- pan className="text-2xght">
- aa.gnal: iskReward: }:1ppan>
-                <s{d{d<s{d<s<span className="text-2xay-500">Seviq:dian>
- pan className="text-2xght">ext-grd-400 b
- ${a.gnal: iquidationPrice.toFixed(2)}`,dian>
-                <s{d{d<s{d<spiv>
-              ))<s{d<s<s{dpiv>
-              ))<s{d<s<s)              cl</<p<s</                <s{d: (
-          <d  cl</<p<s<className="text-gray-400 text-wh">ReInficiente'}satos depa �A200: sp
-                  <p
-              cl</div>
-              )))
- reifffffffff})}           div>
-          div>
-         {/* Mask:  Rules/}
-        {div className="gr-gray-900 bounded-xl p-6 5order-yorder-gray-800 p
-            ih2lassName="text-2x font-bold $b-4"3ext-gray-300">{lsk:  Mane}xmt * Rules</h2          <div className="flid grid-cols-2 2d:grid-cols-6 4ap-4">bxt-sm">Re             
-                label: 'LiMax verage</ value: `$${{SK_RULES.tamaxLerage}x</ color: 'text-rellow-400'
- ,
-              ].label: 'LiMax llateral', value: `$${{SK_RULES.tamaxllateral',rcent * 100).}%`color: 'text-blue-400' },
-                label: 'Stop Loss', value: `$$-{{SK_RULES.taopLoss.trcent * 100).}%`color: 'text-bld-400' },
-              ].label: 'LiMax Dailyoss', value: `$${daSK_RULES.tamaxDailyss',, color: 'text-red-400' },
-              ].label: 'LiMax PosionPrs value: `$${{SK_RULES.tamaxSimultaneousPosionPrs, color: 'text-repurpl400' },
-              ].label: 'Li1 (+/ TP2 value: `$${tp1Pct}%)`+/ {tp2Pct}%)` color: 'text-green-400' },
-                label: 'LiMax Streakoss', value: `$${{SK_RULES.tamaxllnsecutivess',es, color: 'text-reange-400' },
-                label: 'Colld $own value: `$${{SK_RULES.tacld $ownMinu'}s}min color: 'text-recya400' },
-              map(itr> (
-                iv cly={itrabel} className="bg-gray-9080rounded-lg p-3">
-                  <className="text-gray-400 text-wh tRetrabel} cp>
-                <p className={`te$tralor}`}ont-bold text-yelg>{itralue}</p>
-                div>
-              ))}           div>
-          div>
-         {/* Maade {
-HiopLry/}
-        {div className="gr-gray-900 bounded-xl p-6 5order-yorder-gray-800 p
-            ih2lassName="text-2x font-bold $b-4"3ext-gray-300">{lHiopLri: =dTrade {s</h2          <div className="flervifw-40auto p
-            <ditablelassName="flwgll ${xt-sm">Re               <tader                <p trlassName="text-gray-400 terder-b border-gray-800 p
-                  {da['Fecha va'Par va'Dir va'try', va'Exit va'Ler va'llateral', va'Pn, di'Stus: 'map(ith> (
-                <d    <taly={ithclassName="px-6"2b-3 pyxt-2x ef>
- ah/p>th                  <p
-
-              cl</ditr                ditader                <tbody                  aades.lep(itt> (
-                <d   trly={itt.idclassName="bg-der-b border-gray-800 p0 bgver:bg-gray-708/30';
-                  <p<sptdlassName="px-6"2b-3 pyxt-2xay-400">{daa.me: /p>tr                <p<p<sptdlassName="px-6"2b-3 pynt-bomibold t{daa.ir}</sptr                <p<p<sptdlassName="px-6"2b-3 pRe                 <p<s<span className={`te-3 2y-1 0 rounded-lbxt-sm tent-semibold te$atirection === 'SHNG')} 'bg-green-600/20 text-green-400 b: 'bg-grd-500/20 text-red-400 b}}>
-                <s{d<p<s<satirection =              cl</<p<s<sppan>
-                <s{d{dsptr                <p<p<sptdlassName="px-6"2b-3 pRe$atitry.toFicaleTiring()})/sptr                <p<p<sptdlassName="px-6"2b-3 pReatitxit 'b${datitxitoFicaleTiring()})/` da'�'}</p>tr                <p<p<sptdlassName="px-6"2b-3 pyxt-grllow-400">{dativerage}x</p>tr                <p<p<sptdlassName="px-6"2b-3 pRe$atillateral}`oFixed(2)}`,ditr                <p<p<sptdlassName="pte-6"2b-3 pynt-bold te$a.pnl || 0) > 0700 'text-reeen-400' },'text-red-400' }}>
-                <s{ddddd{pnl ||! 'Sll); 'b${{pnl || 700 'te+},'te'}${{pnl |oFixed(2)}`,  da'�'}</               <s{d{dsptr                <p<p<sptdlassName="px-6"2b-3 pRe                 <p<s<span className={`"-3 2y-1 0 rounded-lbxt-sm te-gray-500/1020yxt-2xay-400">{daa.atus: ,dian>
-                <s{d{dsptr                <p<pditr                <p
-
-              clditbody              ditable            div>
-          div>
-         {/<footerlassName="text-grnter juxt-2xay-406 text-wh ty-4">
-        <d  P Signals</ v1.1�� ESPxperimt *: =ading Dashboard</�� ESNot Fance:i: =Advice         difooter        </in c      div>
-    )}
-
-e
+        <footer className="text-center text-gray-600 text-xs py-4">
+          JUP Signals v1.2 — Experimental Trading Dashboard — Not Financial Advice
+        </footer>
+      </main>
+    </div>
+  );
+}
