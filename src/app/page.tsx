@@ -3,20 +3,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { RISK_RULES } from '@/lib/types';
 
-interface TopPick {
-  pair: string;
-  direction: string;
-  entry: number;
-  stopLoss: number;
-  takeProfit1: number;
-  takeProfit2: number;
-  leverage: number;
-  collateral: number;
-  liquidationPrice: number;
-  confidence: number;
-  reason: string;
-}
-
 interface MarketData {
   overview: {
     prices: Array<{ pair: string; price: number; change24h: number; volume24h: number }>;
@@ -35,6 +21,8 @@ interface MarketData {
       priceVsEMA200: string;
       strength: number;
       recommendation: string;
+      mode?: string;
+      volumeConfirm?: boolean;
     } | null;
     signal: {
       pair: string;
@@ -50,10 +38,23 @@ interface MarketData {
       confidence: number;
     } | null;
   }>;
+  topPick: {
+    pair: string;
+    direction: string;
+    entry: number;
+    stopLoss: number;
+    takeProfit1: number;
+    takeProfit2: number;
+    leverage: number;
+    collateral: number;
+    liquidationPrice: number;
+    confidence: number;
+    reason: string;
+  } | null;
   session: string;
   macroRisk: string;
   noTradeZone: boolean;
-  topPick: TopPick | null;
+  allRed?: boolean;
   timestamp: string;
 }
 
@@ -68,6 +69,12 @@ interface Trade {
   collateral: number;
   status: string;
   time: string;
+}
+
+// Convert raw strength (0=bearish, 100=bullish) to directional confidence
+function getDirectionalConfidence(strength: number, recommendation: string): number {
+  const isShort = recommendation === 'STRONG_SHORT' || recommendation === 'SHORT';
+  return isShort ? 100 - strength : strength;
 }
 
 export default function Dashboard() {
@@ -134,7 +141,8 @@ export default function Dashboard() {
     );
   }
 
-  const tp = data?.topPick;
+  const tp1Pct = (RISK_RULES.takeProfit1Percent * 100).toFixed(0);
+  const tp2Pct = (RISK_RULES.takeProfit2Percent * 100).toFixed(0);
 
   return (
     <div className="min-h-screen bg-gray-950 text-white">
@@ -169,261 +177,264 @@ export default function Dashboard() {
       </header>
 
       <main className="max-w-7xl mx-auto px-6 py-6 space-y-6">
-
-        {/* ====== TOP PICK RECOMMENDATION BOX ====== */}
-        {data?.noTradeZone ? (
-          <div className="bg-red-950/40 border-2 border-red-500 rounded-2xl p-6 text-center">
-            <p className="text-red-400 text-4xl font-black mb-2 animate-pulse">NO TRADE ZONE</p>
-            <p className="text-red-300 text-lg">Fear & Greed en extremo ({data.overview.fearGreed.value}/100). No abrir posiciones.</p>
-          </div>
-        ) : tp ? (
-          <div className={`rounded-2xl p-6 border-2 ${tp.direction === 'LONG' ? 'bg-green-950/30 border-green-500' : 'bg-red-950/30 border-red-500'}`}>
+        {/* Top Recommendation Box */}
+        {data?.topPick ? (
+          <div className={`rounded-xl p-6 border-2 ${data.topPick.direction === 'SHORT' ? 'border-red-500 bg-red-950/20' : 'border-green-500 bg-green-950/20'}`}>
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-3">
-                <span className={`text-xs font-bold px-3 py-1 rounded-full ${tp.direction === 'LONG' ? 'bg-green-500 text-black' : 'bg-red-500 text-white'}`}>
-                  RECOMENDACIÓN
-                </span>
-                <span className="text-gray-400 text-sm">{tp.reason}</span>
+                <span className={`text-xs font-bold px-3 py-1 rounded-full ${data.topPick.direction === 'SHORT' ? 'bg-red-500 text-white' : 'bg-green-500 text-black'}`}>RECOMENDACIÓN</span>
+                <span className="text-sm text-gray-400">{data.topPick.reason}</span>
               </div>
               <div className="text-right">
                 <p className="text-xs text-gray-500">Confianza</p>
-                <p className={`text-lg font-bold ${tp.confidence >= 60 ? 'text-green-400' : tp.confidence >= 40 ? 'text-yellow-400' : 'text-orange-400'}`}>{tp.confidence}%</p>
-              </div>
-            </div>
-            <div className="flex items-center gap-6 mb-5">
-              <div>
-                <p className={`text-5xl font-black ${tp.direction === 'LONG' ? 'text-green-400' : 'text-red-400'}`}>
-                  {tp.pair}
+                <p className={`text-xl font-bold ${
+                  getDirectionalConfidence(data.topPick.confidence, data.topPick.direction === 'SHORT' ? 'STRONG_SHORT' : 'STRONG_LONG') >= 70
+                    ? (data.topPick.direction === 'SHORT' ? 'text-red-400' : 'text-green-400')
+                    : 'text-yellow-400'
+                }`}>
+                  {getDirectionalConfidence(data.topPick.confidence, data.topPick.direction === 'SHORT' ? 'STRONG_SHORT' : 'STRONG_LONG')}%
                 </p>
               </div>
-              <div>
-                <span className={`text-3xl font-black ${tp.direction === 'LONG' ? 'text-green-400' : 'text-red-400'}`}>
-                  {tp.direction}
-                </span>
+            </div>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-baseline gap-3">
+                <span className="text-5xl font-bold">{data.topPick.pair}</span>
+                <span className={`text-3xl font-bold ${data.topPick.direction === 'SHORT' ? 'text-red-400' : 'text-green-400'}`}>{data.topPick.direction}</span>
               </div>
-              <div className="ml-auto text-right">
+              <div className="text-right">
                 <p className="text-xs text-gray-500">Leverage</p>
-                <p className="text-3xl font-black text-yellow-400">{tp.leverage}x</p>
+                <p className="text-3xl font-bold text-yellow-400">{data.topPick.leverage}x</p>
               </div>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
-              <div className="bg-gray-800/60 rounded-lg p-3">
-                <p className="text-xs text-gray-500">Entry</p>
-                <p className="text-lg font-bold text-white">${tp.entry.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
-              </div>
-              <div className="bg-gray-800/60 rounded-lg p-3">
-                <p className="text-xs text-gray-500">Stop Loss</p>
-                <p className="text-lg font-bold text-red-400">${tp.stopLoss.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
-              </div>
-              <div className="bg-gray-800/60 rounded-lg p-3">
-                <p className="text-xs text-gray-500">TP1 (+1%)</p>
-                <p className="text-lg font-bold text-green-400">${tp.takeProfit1.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
-              </div>
-              <div className="bg-gray-800/60 rounded-lg p-3">
-                <p className="text-xs text-gray-500">TP2 (+2%)</p>
-                <p className="text-lg font-bold text-green-400">${tp.takeProfit2.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
-              </div>
-              <div className="bg-gray-800/60 rounded-lg p-3">
-                <p className="text-xs text-gray-500">Collateral</p>
-                <p className="text-lg font-bold text-blue-400">${tp.collateral}</p>
-              </div>
-              <div className="bg-gray-800/60 rounded-lg p-3">
-                <p className="text-xs text-gray-500">Liquidación</p>
-                <p className="text-lg font-bold text-red-400">${tp.liquidationPrice.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</p>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 text-center">
-            <p className="text-gray-400 text-xl font-bold">Sin señal clara — ESPERAR</p>
-            <p className="text-gray-600 text-sm">No hay activos con señal suficiente para entrar</p>
-          </div>
-        )}
-
-        {/* Macro Overview */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
-            <p className="text-xs text-gray-500 mb-1">Fear & Greed Index</p>
-            <p className={`text-3xl font-bold ${getFearColor(data?.overview.fearGreed.value || 50)}`}>
-              {data?.overview.fearGreed.value || '—'}
-            </p>
-            <p className="text-sm text-gray-400">{data?.overview.fearGreed.classification}</p>
-          </div>
-          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
-            <p className="text-xs text-gray-500 mb-1">BTC Dominance</p>
-            <p className="text-3xl font-bold text-orange-400">{(data?.overview.btcDominance || 0).toFixed(1)}%</p>
-            <p className="text-sm text-gray-400">{(data?.overview.btcDominance || 0) > 55 ? 'BTC Season' : 'Alt Season posible'}</p>
-          </div>
-          <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
-            <p className="text-xs text-gray-500 mb-1">P&L Total</p>
-            <p className={`text-3xl font-bold ${totalPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>${totalPnl.toFixed(2)}</p>
-            <p className="text-sm text-gray-400">{trades.length} trades | WR: {winRate.toFixed(0)}%</p>
-          </div>
-          <div className={`bg-gray-900 rounded-xl p-4 border ${data?.noTradeZone ? 'border-red-500 bg-red-950/30' : 'border-gray-800'}`}>
-            <p className="text-xs text-gray-500 mb-1">Macro Risk</p>
-            <p className={`text-2xl font-bold ${data?.macroRisk?.includes('EXTREME') ? 'text-red-400' : data?.macroRisk?.includes('FEAR') ? 'text-orange-400' : 'text-green-400'}`}>
-              {data?.macroRisk?.replace('_', ' ') || '—'}
-            </p>
-            {data?.noTradeZone && <p className="text-sm text-red-400 font-semibold animate-pulse">NO TRADE ZONE</p>}
-          </div>
-        </div>
-
-        {/* Price Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {data?.overview.prices.map(p => (
-            <div key={p.pair} className={`bg-gray-900 rounded-xl p-4 border ${tp && tp.pair === p.pair ? (tp.direction === 'LONG' ? 'border-green-500 ring-1 ring-green-500/30' : 'border-red-500 ring-1 ring-red-500/30') : 'border-gray-800'}`}>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-lg font-bold">{p.pair}</span>
-                <div className="flex items-center gap-2">
-                  {tp && tp.pair === p.pair && (
-                    <span className={`text-xs font-bold px-2 py-0.5 rounded ${tp.direction === 'LONG' ? 'bg-green-500 text-black' : 'bg-red-500 text-white'}`}>
-                      TOP PICK
-                    </span>
-                  )}
-                  <span className={`text-sm font-semibold ${p.change24h >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {p.change24h >= 0 ? '+' : ''}{p.change24h.toFixed(2)}%
-                  </span>
-                </div>
-              </div>
-              <p className="text-2xl font-bold">${p.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
-              <p className="text-xs text-gray-500">Vol: ${(p.volume24h / 1e6).toFixed(1)}M</p>
-            </div>
-          ))}
-        </div>
-
-        {/* Signal Cards */}
-        {data?.analyses && data.analyses.length > 0 && (
-          <div>
-            <h2 className="text-lg font-bold mb-3 text-gray-300">Análisis EMA Cross 20/200</h2>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {data.analyses.map(a => (
-                <div key={a.pair} className="bg-gray-900 rounded-xl p-5 border border-gray-800">
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="text-lg font-bold">{a.pair}</span>
-                    {a.ema && (
-                      <span className={`text-xs font-semibold px-2 py-1 rounded-full border ${getSignalColor(a.ema.recommendation)}`}>
-                        {a.ema.recommendation.replace('_', ' ')}
-                      </span>
-                    )}
-                  </div>
-                  {a.ema ? (
-                    <>
-                      <div className="space-y-2 mb-3">
-                        <div className="flex justify-between text-sm">
-                          <span className="text-gray-400">EMA 20</span>
-                          <span className="text-orange-400">${a.ema.ema20.toFixed(2)}</span>
-                        </div>
-                        <div className="flex justify-between text-sm">
-                          <span className="text-gray-400">EMA 200</span>
-                          <span className="text-blue-400">${a.ema.ema200.toFixed(2)}</span>
-                        </div>
-                        <div className="flex justify-between text-sm">
-                          <span className="text-gray-400">Cross</span>
-                          <span className={a.ema.signal === 'GOLDEN_CROSS' ? 'text-green-400' : a.ema.signal === 'DEATH_CROSS' ? 'text-red-400' : 'text-gray-400'}>
-                            {a.ema.signal === 'GOLDEN_CROSS' ? 'Golden' : a.ema.signal === 'DEATH_CROSS' ? 'Death' : 'Neutral'}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="mb-3">
-                        <div className="flex justify-between text-xs text-gray-500 mb-1">
-                          <span>Signal Strength</span>
-                          <span>{a.ema.strength.toFixed(0)}%</span>
-                        </div>
-                        <div className="w-full bg-gray-700 rounded-full h-2">
-                          <div
-                            className={`h-2 rounded-full ${a.ema.strength >= 70 ? 'bg-green-500' : a.ema.strength >= 50 ? 'bg-yellow-500' : 'bg-red-500'}`}
-                            style={{ width: `${a.ema.strength}%` }}
-                          />
-                        </div>
-                      </div>
-                      {a.signal && (
-                        <div className="mt-3 p-3 bg-gray-800 rounded-lg border border-gray-700">
-                          <p className="text-xs font-bold text-green-400 mb-2">SEÑAL ACTIVA</p>
-                          <div className="grid grid-cols-2 gap-1 text-xs">
-                            <span className="text-gray-500">Entry:</span><span className="text-right">${a.signal.entry.toFixed(2)}</span>
-                            <span className="text-gray-500">SL:</span><span className="text-right text-red-400">${a.signal.stopLoss.toFixed(2)}</span>
-                            <span className="text-gray-500">TP1:</span><span className="text-right text-green-400">${a.signal.takeProfit1.toFixed(2)}</span>
-                            <span className="text-gray-500">TP2:</span><span className="text-right text-green-400">${a.signal.takeProfit2.toFixed(2)}</span>
-                            <span className="text-gray-500">Leverage:</span><span className="text-right text-yellow-400">{a.signal.leverage}x</span>
-                            <span className="text-gray-500">Liq:</span><span className="text-right text-red-400">${a.signal.liquidationPrice.toFixed(2)}</span>
-                          </div>
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <p className="text-gray-500 text-sm">Insuficientes datos para EMA200</p>
-                  )}
+              {[
+                { label: 'Entry', value: `$${data.topPick.entry.toFixed(2)}`, color: 'text-white' },
+                { label: 'Stop Loss', value: `$${data.topPick.stopLoss.toFixed(2)}`, color: 'text-red-400' },
+                { label: `TP1 (+${tp1Pct}%)`, value: `$${data.topPick.takeProfit1.toFixed(2)}`, color: 'text-green-400' },
+                { label: `TP2 (+${tp2Pct}%)`, value: `$${data.topPick.takeProfit2.toFixed(2)}`, color: 'text-blue-400' },
+                { label: 'Collateral', value: `$${data.topPick.collateral}`, color: 'text-orange-400' },
+                { label: 'Liquidación', value: `$${data.topPick.liquidationPrice.toFixed(2)}`, color: 'text-red-400' },
+              ].map(item => (
+                <div key={item.label} className="bg-gray-900/50 rounded-lg p-3">
+                  <p className="text-xs text-gray-500">{item.label}</p>
+                  <p className={`text-lg font-bold ${item.color}`}>{item.value}</p>
                 </div>
               ))}
             </div>
           </div>
+        ) : (
+          <div className="rounded-xl p-6 border-2 border-yellow-500/50 bg-yellow-950/10">
+            <div className="flex items-center gap-3">
+              <span className="text-2xl">⏸️</span>
+              <div>
+                <p className="text-xl font-bold text-yellow-400">Sin señal clara — ESPERAR</p>
+                <p className="text-sm text-gray-400">
+                  {data?.allRed ? 'Todos los activos en rojo — mercado en pánico' : data?.noTradeZone ? 'Fear & Greed extremo — no trade zone' : 'No hay confluencia técnica suficiente'}
+                </p>
+              </div>
+            </div>
+          </div>
         )}
 
-        {/* Risk Rules */}
-        <div className="bg-gray-900 rounded-xl p-5 border border-gray-800">
-          <h2 className="text-lg font-bold mb-3 text-gray-300">Risk Management Rules</h2>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-            {[
-              { label: 'Max Leverage', value: `${RISK_RULES.maxLeverage}x`, color: 'text-yellow-400' },
-              { label: 'Max Collateral', value: `${RISK_RULES.maxCollateralPercent * 100}%`, color: 'text-blue-400' },
-              { label: 'Stop Loss', value: `-${RISK_RULES.stopLossPercent * 100}%`, color: 'text-red-400' },
-              { label: 'Max Daily Loss', value: `$${RISK_RULES.maxDailyLoss}`, color: 'text-red-400' },
-              { label: 'Max Positions', value: `${RISK_RULES.maxSimultaneousPositions}`, color: 'text-purple-400' },
-              { label: 'TP1 / TP2', value: '+1% / +2%', color: 'text-green-400' },
-              { label: 'Max Streak Loss', value: `${RISK_RULES.maxConsecutiveLosses}`, color: 'text-orange-400' },
-              { label: 'Cooldown', value: `${RISK_RULES.cooldownMinutes}min`, color: 'text-cyan-400' },
-            ].map(r => (
-              <div key={r.label} className="bg-gray-800 rounded-lg p-3">
-                <p className="text-gray-500 text-xs">{r.label}</p>
-                <p className={`${r.color} font-bold text-lg`}>{r.value}</p>
+        {/* Macro Overview */}
+        {div className="grid grid-cols-2 1d:grid-cols-6 4ap-4">
+            iv className="gr-gray-900 bounded-xl p-6 4order-yorder-gray-800 p
+            <diclassName="text-xs text-gray-500">b-4"1">ar & Greed exIed-/p>
+               className={`text-lgl font-bold ${datFearColor =(ta?.noerview: .arGreed: alue}<| '�50)}>
+                {ta?.noerview: .arGreed: alue}<| '—'}</           </di
+               className={`ext-sm text-gray-400">{data.tnoerview: .arGreed: aassification: /p>
+            div>
+          <div className="fl-gray-900 bounded-xl p-6 4order-yorder-gray-800 p
+            <diclassName="text-xs text-gray-500">b-4"1">BTC minance: di
+               className={`ext-sml font-bold text-yeange-400' {da(ta?.noerview: .cDominance: | 0) >oFixed(2)1%
+ di
+               className={`ext-sm text-gray-400">{da(ta?.noerview: .cDominance: | 0) > > 55 'FeBTC Sson}<: 'NoAlt Sson}< posible</p>
+            div>
+          <div className="fl-gray-900 bounded-xl p-6 4order-yorder-gray-800 p
+            <diclassName="text-xs text-gray-500">b-4"1">P&L TalPnp>
+               className={`text-lgl font-bold ${datalPnl =  700 'text-reeen-400' },'text-red-400' }}>
+ datalPnl =oFixed(2)}`,di
+               className={`ext-sm text-gray-400">{daades.length *}rades.l | WR: {nRate =oFixed(0);
+
+ di
+            div>
+          <div className="f{`-gray-900 bounded-xl p-6 4order-yo${ta?.noTradeZone ? 'Ferder-red-500 bg-red-950/203 : 'border-gree-800'}`}
+             <diclassName="text-xs text-gray-500">b-4"1">cro Ovsk: p>
+               className={`text-lg2 font-bold ${data.t?.croRisk: ?.inclus.l('EXTREME') 'text-red-400' : 'tta.t?.croRisk: ?.inclus.l('FEAR') 'text-reange-400' },'text-green-400'}`}>{d               {ta?.nocroRisk: ?.replace('_ va' ')  '—'}</           </di
+              {ta?.noTradeZone ? &&  className={`ext-sm text-grd-400 bont-semibold teimate-sppulse">NO TRADE ZONEdi
+ }           div>
+          div>
+         {/* Maice.t Cards/}
+        {div className="grid grid-cols-2 1d:grid-cols-6 3ap-4">
+            ata.tnoerview: .ices: ap(itp> (
+              iv key={itpair}</lassName="f{`-gray-900 bounded-xl p-6 4order-yo${ta?.nopPick.l?air}<== 'Spair}< 'Ferder-red-500 b/6 : 'border-gree-800'}`}
+             <d<div className="flex items-center justify-between mb-4"2
+                <p v className="flex items-center gap-3"2
+                <p<span className="text-2x font-bold ${dapair}</span>
+                <s{data?.topPick ??air}<== 'Spair}< &&                 <d<p<span className="text-2x font-bold px-3 2y-1 0 rounded-lgll ${-red-500 text-white' ">TOP PICKspan>
+                <s{d
+              cl</div>
+              ))<span className={`text-3x font-semibold te$apaange24h:   700 'text-reeen-400' },'text-red-400' }}>
+                <s{dapaange24h:   700 'te+},'te'}apaange24h: oFixed(2)}`,                </p>an>
               </div>
-            ))}
-          </div>
-        </div>
+              <diclassName={`ext-sm2 font-bold">{d$apapce.toFicaleTiring()}ded-fined, { nanimumFraion}<Digits: 2, maximumFraion}<Digits: 2 }`,di
+              <p className="text-xs text-gray-500">{iVol:e$a(p.lume24h:  / 1e6>oFixed(2)1%
+Mp>
+            </div>
+            }
+          div>
+         {/* Magnals< Cards/}
+        {div c          <dih2lassName="text-2x font-bold $b-4"3ext-gray-300">{lAnálisis EMA Cross 220'}0</h2          <div className="flid grid-cols-2 1d:grid-cols-6 3ap-4">
+            {data?.alllyses: ap(ita> {
+    ifffffffffffnst isShort = rea.ema?.remmendation === 'STRONG_SHORT' || rea.ema?.remmendation === 'STRRT';
+  reifffffffffffnst isdirnfidence(d rea.ema 'ttDirectionalConfidence(daa.ema.rength;
+,ea.ema.remmendation =) 0;
 
-        {/* Trade History */}
-        <div className="bg-gray-900 rounded-xl p-5 border border-gray-800">
-          <h2 className="text-lg font-bold mb-3 text-gray-300">Historial de Trades</h2>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-gray-500 border-b border-gray-800">
-                  {['Fecha', 'Par', 'Dir', 'Entry', 'Exit', 'Lev', 'Collateral', 'PnL', 'Status'].map(h => (
-                    <th key={h} className="py-2 px-3 text-left">{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {trades.map(t => (
-                  <tr key={t.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
-                    <td className="py-2 px-3 text-gray-400">{t.time}</td>
-                    <td className="py-2 px-3 font-semibold">{t.pair}</td>
-                    <td className="py-2 px-3">
-                      <span className={`px-2 py-0.5 rounded text-xs font-semibold ${t.direction === 'LONG' ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
-                        {t.direction}
-                      </span>
-                    </td>
-                    <td className="py-2 px-3">${t.entry.toLocaleString()}</td>
-                    <td className="py-2 px-3">{t.exit ? `$${t.exit.toLocaleString()}` : '—'}</td>
-                    <td className="py-2 px-3 text-yellow-400">{t.leverage}x</td>
-                    <td className="py-2 px-3">${t.collateral.toFixed(2)}</td>
-                    <td className={`py-2 px-3 font-bold ${(t.pnl || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                      {t.pnl !== null ? `${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}` : '—'}
-                    </td>
-                    <td className="py-2 px-3">
-                      <span className="px-2 py-0.5 rounded text-xs bg-gray-500/20 text-gray-400">{t.status}</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+ reifffffffffffturn (
+      <d        <div cly={itaair}</lassName="fl-gray-900 bounded-xl p-6 5order-yorder-gray-800 p
+            <d    <div className="flex items-center justify-between mb-4">
+                  <p<span className="text-2x font-bold ${daaair}</span>
+                <s{d{daa.ema &&                 <d<p<s<span className={`text-xs font-bomibold te-3 2y-1 rounded-full ${rder-yo${tSignalColor =(a.ema.remmendation =)}>
+                <s{d<s{d{daa.ema.remmendation =.replace('_ va' ')              cl</<p<s<sppan>
+                <s{d{d)              cl</<pdiv>
+              ))<s{daa.ema ?                 <d<p<sp                <s{d<s{div className="flace-y-6"2b-4">
+                  <p<s<s{div className="flex itstify-between mbxt-sm">Re                 <p<s<s{d<span className="text-2xay-400">{dEMA 20ppan>
+                <s{d{d<s{d<span className="text-2xange-400' {d$aa.ema.a200:oFixed(2)}`,dian>
+                <s{d{d<s{ddiv>
+              ))<s{d<s<s{div className="flex itstify-between mbxt-sm">Re                 <p<s<s{d<span className="text-2xay-400">{dEMA 200ppan>
+                <s{d{d<s{d<span className="text-2xue-400">{d$aa.ema.a200::oFixed(2)}`,dian>
+                <s{d{d<s{ddiv>
+              ))<s{d<s<s{div className="flex itstify-between mbxt-sm">Re                 <p<s<s{d<span className="text-2xay-400">{dCrossppan>
+                <s{d{d<s{d<span className="taa.ema.gnal: == 'STGOLDEN_CROSS' 'text-reeen-400' },'ta.ema.gnal: == 'STDEATH_CROSS' 'text-red-400' : 'text-gree-400">'
+                <s{d<s{d{dddddaa.ema.gnal: == 'STGOLDEN_CROSS' 'teGd ten},'ta.ema.gnal: == 'STDEATH_CROSS' 'teDeath: 'No eutl',               cl</<p<s<s<s{ddian>
+                <s{d{d<s{ddiv>
+              ))<s{d<s<s{div className="flex itstify-between mbxt-sm">Re                 <p<s<s{d<span className="text-2xay-400">{dvs EMA20ppan>
+                <s{d{d<s{d<span className="taa.ema.iceVsEMA200:== 'STABOVE' 'text-reeen-400' },'text-red-400' }}>aa.ema.iceVsEMA200:,dian>
+                <s{d{d<s{ddiv>
+              ))<s{d<s<s{daa.ema.de?: &&                 <d<p<s<s<s{div className="flex itstify-between mbxt-sm">Re                 <p<s<s{d<s<span className="text-2xay-400">{dModoppan>
+                <s{d{d<s{d<s<span className="text-2xpurpl400' {daa.ema.de?:.replace('_ va' ') ppan>
+                <s{d{d<s{d<spiv>
+              ))<s{d<s<s{d)              cl</<p<s<s{daa.ema.lumeConfirm?: ! 'Sded-fined &&                 <d<p<s<s<s{div className="flex itstify-between mbxt-sm">Re                 <p<s<s{d<s<span className="text-2xay-400">{dVumeConppan>
+                <s{d{d<s{d<s<span className="taa.ema.lumeConfirm?: 'text-reeen-400' },'text-rellow-400'
+ 
+                <s{d<s{d{ddddd{daa.ema.lumeConfirm?: 'te✓ nfirm?:ad : da'⚠ Bajo               cl</<p<s<s<s{d{ddian>
+                <s{d{d<s{d<spiv>
+              ))<s{d<s<s{d)              cl</<p<s<spiv>
+              ))<s{d<s<siv className="max4">
+                  <p<s<s{div className="flex itstify-between mbxt-sm text-gray-500">b-4"1">               <s{d{d<s{d<span confianza</ recticnalCoppan>
+                <s{d{d<s{d<span c>{dirnfidence(doFixed(0);
 
-        <footer className="text-center text-gray-600 text-xs py-4">
-          JUP Signals v1.0 — Experimental Trading Dashboard — Not Financial Advice
-        </footer>
-      </main>
-    </div>
-  );
-}
+ dian>
+                <s{d{d<s{ddiv>
+              ))<s{d<s<s{div className="flwgll ${-reay-700 rounded-lgll h-122
+                <p<s{d<s<s{div c             cl</<p<s<s<s{d{dassName={`te122ounded-full ${da               <s{d<s{d{ddddd{ddirnfidence(d  70
+                    ?             ?  Short ? 10g-red-500 t: 'bg-green-500 t
+                    :             :ddirnfidence(d  705                    ?               10g-rellow-500/5                }`    :             :dg-gray-500/1                }`    :       }
+            >
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+styl{`t{ wid: nu`${dirnfidence(d}%` }            >
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/                <s{d{d<s{ddiv>
+              ))<s{d<s<sdiv>
+              ))<s{d<s<s{a.gnal: =&&                 <d<p<s<s<siv className="f{`mt py- pyunded-lg p-rder-yo${Short ? 10g-red-500/203 order-red-508' : 'bg-gray-800'}order-gray-807' }}>
+                <s{d<p<s<s<siclassName={`text-xl sont-bold $b-4"2o${Short ? 10gxt-red-400' : 'text-green-400'}`}>{dSEÑAL ACTIVA�� no{a.gnal: irection}</sp
+                  <p<p<s<s<siv className="frid grid-cols-2 mdp-4"1bxt-sm tRe                 <p<s<s{d<s<span className="text-2xay-400">{itry',:dian>
+ pan className="text-2xght">
+ ${a.gnal: itry.toFixed(2)}`,ppan>
+                <s{d{d<s{d<s<span className="text-2xay-500">SesL:dian>
+ pan className="text-2xght">ext-grd-400 b
+ ${a.gnal: iopLoss.toFixed(2)}`,ppan>
+                <s{d{d<s{d<s<span className="text-2xay-500">SeTP1:dian>
+ pan className="text-2xght">ext-green-400'}
+ ${a.gnal: ikeProfit1.toFixed(2)}`,ppan>
+                <s{d{d<s{d<s<span className="text-2xay-500">SeTP2:dian>
+ pan className="text-2xght">ext-green-400'}
+ ${a.gnal: ikeProfit1.2oFixed(2)}`,ppan>
+                <s{d{d<s{d<s<span className="text-2xay-500">Severage</:dian>
+ pan className="text-2xght">ext-grllow-400">{daa.gnal: iverage}x</p>an>
+                <s{d{d<s{d<s<span className="text-2xay-500">SeR:R:dian>
+ pan className="text-2xght">
+ aa.gnal: iskReward: }:1ppan>
+                <s{d{d<s{d<s<span className="text-2xay-500">Seviq:dian>
+ pan className="text-2xght">ext-grd-400 b
+ ${a.gnal: iquidationPrice.toFixed(2)}`,dian>
+                <s{d{d<s{d<spiv>
+              ))<s{d<s<s{dpiv>
+              ))<s{d<s<s)              cl</<p<s</                <s{d: (
+          <d  cl</<p<s<className="text-gray-400 text-wh">ReInficiente'}satos depa �A200: sp
+                  <p
+              cl</div>
+              )))
+ reifffffffff})}           div>
+          div>
+         {/* Mask:  Rules/}
+        {div className="gr-gray-900 bounded-xl p-6 5order-yorder-gray-800 p
+            ih2lassName="text-2x font-bold $b-4"3ext-gray-300">{lsk:  Mane}xmt * Rules</h2          <div className="flid grid-cols-2 2d:grid-cols-6 4ap-4">bxt-sm">Re             
+                label: 'LiMax verage</ value: `$${{SK_RULES.tamaxLerage}x</ color: 'text-rellow-400'
+ ,
+              ].label: 'LiMax llateral', value: `$${{SK_RULES.tamaxllateral',rcent * 100).}%`color: 'text-blue-400' },
+                label: 'Stop Loss', value: `$$-{{SK_RULES.taopLoss.trcent * 100).}%`color: 'text-bld-400' },
+              ].label: 'LiMax Dailyoss', value: `$${daSK_RULES.tamaxDailyss',, color: 'text-red-400' },
+              ].label: 'LiMax PosionPrs value: `$${{SK_RULES.tamaxSimultaneousPosionPrs, color: 'text-repurpl400' },
+              ].label: 'Li1 (+/ TP2 value: `$${tp1Pct}%)`+/ {tp2Pct}%)` color: 'text-green-400' },
+                label: 'LiMax Streakoss', value: `$${{SK_RULES.tamaxllnsecutivess',es, color: 'text-reange-400' },
+                label: 'Colld $own value: `$${{SK_RULES.tacld $ownMinu'}s}min color: 'text-recya400' },
+              map(itr> (
+                iv cly={itrabel} className="bg-gray-9080rounded-lg p-3">
+                  <className="text-gray-400 text-wh tRetrabel} cp>
+                <p className={`te$tralor}`}ont-bold text-yelg>{itralue}</p>
+                div>
+              ))}           div>
+          div>
+         {/* Maade {
+HiopLry/}
+        {div className="gr-gray-900 bounded-xl p-6 5order-yorder-gray-800 p
+            ih2lassName="text-2x font-bold $b-4"3ext-gray-300">{lHiopLri: =dTrade {s</h2          <div className="flervifw-40auto p
+            <ditablelassName="flwgll ${xt-sm">Re               <tader                <p trlassName="text-gray-400 terder-b border-gray-800 p
+                  {da['Fecha va'Par va'Dir va'try', va'Exit va'Ler va'llateral', va'Pn, di'Stus: 'map(ith> (
+                <d    <taly={ithclassName="px-6"2b-3 pyxt-2x ef>
+ ah/p>th                  <p
+
+              cl</ditr                ditader                <tbody                  aades.lep(itt> (
+                <d   trly={itt.idclassName="bg-der-b border-gray-800 p0 bgver:bg-gray-708/30';
+                  <p<sptdlassName="px-6"2b-3 pyxt-2xay-400">{daa.me: /p>tr                <p<p<sptdlassName="px-6"2b-3 pynt-bomibold t{daa.ir}</sptr                <p<p<sptdlassName="px-6"2b-3 pRe                 <p<s<span className={`te-3 2y-1 0 rounded-lbxt-sm tent-semibold te$atirection === 'SHNG')} 'bg-green-600/20 text-green-400 b: 'bg-grd-500/20 text-red-400 b}}>
+                <s{d<p<s<satirection =              cl</<p<s<sppan>
+                <s{d{dsptr                <p<p<sptdlassName="px-6"2b-3 pRe$atitry.toFicaleTiring()})/sptr                <p<p<sptdlassName="px-6"2b-3 pReatitxit 'b${datitxitoFicaleTiring()})/` da'�'}</p>tr                <p<p<sptdlassName="px-6"2b-3 pyxt-grllow-400">{dativerage}x</p>tr                <p<p<sptdlassName="px-6"2b-3 pRe$atillateral}`oFixed(2)}`,ditr                <p<p<sptdlassName="pte-6"2b-3 pynt-bold te$a.pnl || 0) > 0700 'text-reeen-400' },'text-red-400' }}>
+                <s{ddddd{pnl ||! 'Sll); 'b${{pnl || 700 'te+},'te'}${{pnl |oFixed(2)}`,  da'�'}</               <s{d{dsptr                <p<p<sptdlassName="px-6"2b-3 pRe                 <p<s<span className={`"-3 2y-1 0 rounded-lbxt-sm te-gray-500/1020yxt-2xay-400">{daa.atus: ,dian>
+                <s{d{dsptr                <p<pditr                <p
+
+              clditbody              ditable            div>
+          div>
+         {/<footerlassName="text-grnter juxt-2xay-406 text-wh ty-4">
+        <d  P Signals</ v1.1�� ESPxperimt *: =ading Dashboard</�� ESNot Fance:i: =Advice         difooter        </in c      div>
+    )}
+
+e
