@@ -9,14 +9,20 @@ export interface Candle {
 }
 
 export interface EMAResult {
-  ema20: number;
-  ema200: number;
+  emaShort: number;
+  emaLong: number;
+  ema20: number;  // kept for backward compat
+  ema200: number; // kept for backward compat
   price: number;
   signal: 'GOLDEN_CROSS' | 'DEATH_CROSS' | 'NEUTRAL';
   priceVsEMA20: 'ABOVE' | 'BELOW';
   priceVsEMA200: 'ABOVE' | 'BELOW';
   strength: number; // 0-100 signal strength
   recommendation: 'STRONG_LONG' | 'LONG' | 'WAIT' | 'SHORT' | 'STRONG_SHORT';
+  mode: 'EMA_20_200' | 'EMA_9_21'; // which EMA pair produced this
+  avgVolume: number;
+  lastVolume: number;
+  volumeConfirm: boolean;
 }
 
 export function calculateEMA(prices: number[], period: number): number[] {
@@ -39,41 +45,81 @@ export function calculateEMA(prices: number[], period: number): number[] {
   return ema;
 }
 
+// Primary analysis: tries EMA 20/200 first, falls back to EMA 9/21
 export function analyzeEMA(candles: Candle[]): EMAResult | null {
-  if (candles.length < 200) return null;
+  // Try EMA 20/200 first (needs 200+ candles)
+  if (candles.length >= 200) {
+    const result = analyzeEMAPair(candles, 20, 200, 'EMA_20_200');
+    if (result) return result;
+  }
+
+  // Fallback to EMA 9/21 (needs 21+ candles)
+  if (candles.length >= 30) {
+    return analyzeEMAPair(candles, 9, 21, 'EMA_9_21');
+  }
+
+  return null;
+}
+
+function analyzeEMAPair(
+  candles: Candle[],
+  shortPeriod: number,
+  longPeriod: number,
+  mode: 'EMA_20_200' | 'EMA_9_21'
+): EMAResult | null {
+  if (candles.length < longPeriod) return null;
 
   const closes = candles.map(c => c.close);
-  const ema20Array = calculateEMA(closes, 20);
-  const ema200Array = calculateEMA(closes, 200);
+  const volumes = candles.map(c => c.volume);
+  const emaShortArray = calculateEMA(closes, shortPeriod);
+  const emaLongArray = calculateEMA(closes, longPeriod);
 
-  const ema20 = ema20Array[ema20Array.length - 1];
-  const ema200 = ema200Array[ema200Array.length - 1];
+  const emaShort = emaShortArray[emaShortArray.length - 1];
+  const emaLong = emaLongArray[emaLongArray.length - 1];
   const price = closes[closes.length - 1];
 
+  // Volume analysis
+  const recentVols = volumes.slice(-30).filter(v => v > 0);
+  const avgVolume = recentVols.length > 0 ? recentVols.reduce((a, b) => a + b, 0) / recentVols.length : 0;
+  const lastVolume = volumes[volumes.length - 1] || 0;
+  const volumeConfirm = avgVolume > 0 ? lastVolume > avgVolume * 0.8 : true; // confirm if volume >= 80% of avg
+
   // Determine cross
-  const prevEma20 = ema20Array.length > 1 ? ema20Array[ema20Array.length - 2] : ema20;
-  const prevEma200 = ema200Array.length > 1 ? ema200Array[ema200Array.length - 2] : ema200;
-
   let signal: EMAResult['signal'] = 'NEUTRAL';
-  if (ema20 > ema200) signal = 'GOLDEN_CROSS';
-  if (ema20 < ema200) signal = 'DEATH_CROSS';
+  if (emaShort > emaLong) signal = 'GOLDEN_CROSS';
+  if (emaShort < emaLong) signal = 'DEATH_CROSS';
 
-  const priceVsEMA20 = price > ema20 ? 'ABOVE' : 'BELOW';
-  const priceVsEMA200 = price > ema200 ? 'ABOVE' : 'BELOW';
+  const priceVsShort = price > emaShort ? 'ABOVE' : 'BELOW';
+  const priceVsLong = price > emaLong ? 'ABOVE' : 'BELOW';
 
   // Signal strength 0-100
   let strength = 50;
+
+  // Cross direction
   if (signal === 'GOLDEN_CROSS') strength += 15;
   if (signal === 'DEATH_CROSS') strength -= 15;
-  if (priceVsEMA20 === 'ABOVE') strength += 10;
+
+  // Price vs EMAs
+  if (priceVsShort === 'ABOVE') strength += 10;
   else strength -= 10;
-  if (priceVsEMA200 === 'ABOVE') strength += 10;
+  if (priceVsLong === 'ABOVE') strength += 10;
   else strength -= 10;
 
   // EMA spread indicates trend strength
-  const spread = Math.abs(ema20 - ema200) / ema200 * 100;
+  const spread = Math.abs(emaShort - emaLong) / emaLong * 100;
   if (signal === 'GOLDEN_CROSS') strength += Math.min(spread * 5, 15);
   if (signal === 'DEATH_CROSS') strength -= Math.min(spread * 5, 15);
+
+  // Volume confirmation bonus/penalty
+  if (!volumeConfirm) {
+    // Low volume = less confidence, pull toward 50
+    strength = strength > 50 ? strength - 10 : strength + 10;
+  }
+
+  // EMA 9/21 is a faster, noisier signal — slightly reduce extremes
+  if (mode === 'EMA_9_21') {
+    strength = Math.round(50 + (strength - 50) * 0.85);
+  }
 
   strength = Math.max(0, Math.min(100, strength));
 
@@ -83,7 +129,22 @@ export function analyzeEMA(candles: Candle[]): EMAResult | null {
   else if (strength <= 20) recommendation = 'STRONG_SHORT';
   else if (strength <= 35) recommendation = 'SHORT';
 
-  return { ema20, ema200, price, signal, priceVsEMA20, priceVsEMA200, strength, recommendation };
+  return {
+    emaShort,
+    emaLong,
+    ema20: emaShort,
+    ema200: emaLong,
+    price,
+    signal,
+    priceVsEMA20: priceVsShort,
+    priceVsEMA200: priceVsLong,
+    strength,
+    recommendation,
+    mode,
+    avgVolume,
+    lastVolume,
+    volumeConfirm,
+  };
 }
 
 export interface TradeSignal {
@@ -116,13 +177,14 @@ export function generateSignal(
   // Max 20% of balance per trade
   const collateral = Math.min(balance * 0.2, 300);
 
-  // SL at -1.5% for longs, +1.5% for shorts
+  // IMPROVED R:R — SL at -1.5%, TP1 at +2%, TP2 at +4%
   const slPercent = 0.015;
-  const stopLoss = isLong ? price * (1 - slPercent) : price * (1 + slPercent);
+  const tp1Percent = 0.02;
+  const tp2Percent = 0.04;
 
-  // TP1 at +1%, TP2 at +2%
-  const takeProfit1 = isLong ? price * 1.01 : price * 0.99;
-  const takeProfit2 = isLong ? price * 1.02 : price * 0.98;
+  const stopLoss = isLong ? price * (1 - slPercent) : price * (1 + slPercent);
+  const takeProfit1 = isLong ? price * (1 + tp1Percent) : price * (1 - tp1Percent);
+  const takeProfit2 = isLong ? price * (1 + tp2Percent) : price * (1 - tp2Percent);
 
   // Liquidation price
   const liqDistance = 1 / leverage;
@@ -130,7 +192,7 @@ export function generateSignal(
     ? price * (1 - liqDistance)
     : price * (1 + liqDistance);
 
-  const riskReward = 0.02 / slPercent; // ~1.33
+  const riskReward = tp2Percent / slPercent; // 0.04/0.015 = 2.67
 
   return {
     pair,
@@ -146,4 +208,3 @@ export function generateSignal(
     confidence: analysis.strength,
   };
 }
-

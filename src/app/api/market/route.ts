@@ -36,11 +36,19 @@ export async function GET() {
 
     const noTradeZone = overview.fearGreed.value < 10 || overview.fearGreed.value > 90;
 
+    // ALL-RED FILTER: if every asset is negative 24h, recommend WAIT
+    const allRed = overview.prices.length > 0 && overview.prices.every(p => p.change24h < 0);
+
     let topPick: Record<string, unknown> | null = null;
 
+    // PRIORITY 1: EMA Cross signal (real technical signal)
     const withSignals = ranked.filter(a => a.signal);
     if (withSignals.length > 0 && !noTradeZone) {
       const best = withSignals[0];
+      const emaMode = best.ema!.mode === 'EMA_20_200' ? 'EMA 20/200' : 'EMA 9/21';
+      const crossType = best.ema!.signal === 'GOLDEN_CROSS' ? 'Golden Cross' : best.ema!.signal === 'DEATH_CROSS' ? 'Death Cross' : 'Neutral';
+      const volTag = best.ema!.volumeConfirm ? '' : ' | Low Vol';
+
       topPick = {
         pair: best.pair,
         direction: best.signal!.direction,
@@ -52,38 +60,40 @@ export async function GET() {
         collateral: best.signal!.collateral,
         liquidationPrice: best.signal!.liquidationPrice,
         confidence: best.ema!.strength,
-        reason: 'EMA Cross ' + (best.ema!.signal === 'GOLDEN_CROSS' ? 'Golden Cross' : best.ema!.signal === 'DEATH_CROSS' ? 'Death Cross' : 'Neutral') + ' | Strength ' + best.ema!.strength.toFixed(0) + '%',
+        reason: emaMode + ' ' + crossType + ' | Strength ' + best.ema!.strength.toFixed(0) + '%' + volTag,
       };
-    } else if (!noTradeZone && overview.prices.length > 0) {
+    }
+    // PRIORITY 2: Momentum fallback — ONLY if not all assets are red
+    else if (!noTradeZone && !allRed && overview.prices.length > 0) {
       const sorted = [...overview.prices].filter(p => p.price > 0).sort((a, b) => b.change24h - a.change24h);
       const best = sorted[0];
-      if (best) {
-        const isLong = best.change24h > -3;
+      if (best && best.change24h > 0) {
+        // Only LONG on positive momentum asset
         const leverage = overview.fearGreed.value < 20 ? 15 : overview.fearGreed.value < 40 ? 20 : 25;
         const collateral = Math.min(balance * 0.2, 300);
-        const slPercent = 0.015;
         const entry = best.price;
-        const stopLoss = isLong ? entry * (1 - slPercent) : entry * (1 + slPercent);
-        const tp1 = isLong ? entry * 1.01 : entry * 0.99;
-        const tp2 = isLong ? entry * 1.02 : entry * 0.98;
-        const liqPrice = isLong ? entry * (1 - 1 / leverage) : entry * (1 + 1 / leverage);
-        const conf = Math.max(20, Math.min(80, 50 + best.change24h * 5));
+        const sl = entry * 0.985;
+        const tp1 = entry * 1.02;
+        const tp2 = entry * 1.04;
+        const liq = entry * (1 - 1 / leverage);
+        const conf = Math.max(20, Math.min(70, 40 + best.change24h * 5));
 
         topPick = {
           pair: best.pair,
-          direction: isLong ? 'LONG' : 'SHORT',
+          direction: 'LONG',
           entry,
-          stopLoss: Math.round(stopLoss * 100) / 100,
+          stopLoss: Math.round(sl * 100) / 100,
           takeProfit1: Math.round(tp1 * 100) / 100,
           takeProfit2: Math.round(tp2 * 100) / 100,
           leverage,
           collateral: Math.round(collateral * 100) / 100,
-          liquidationPrice: Math.round(liqPrice * 100) / 100,
+          liquidationPrice: Math.round(liq * 100) / 100,
           confidence: Math.round(conf),
-          reason: 'Momentum ' + (best.change24h > 0 ? '+' : '') + best.change24h.toFixed(2) + '% 24h | F&G: ' + overview.fearGreed.value,
+          reason: 'Momentum +' + best.change24h.toFixed(2) + '% 24h | F&G: ' + overview.fearGreed.value,
         };
       }
     }
+    // If allRed or noTradeZone: topPick stays null -> dashboard shows ESPERAR
 
     return NextResponse.json({
       overview,
@@ -91,6 +101,7 @@ export async function GET() {
       session,
       macroRisk,
       noTradeZone,
+      allRed,
       topPick,
       rules: RISK_RULES,
       timestamp: new Date().toISOString(),

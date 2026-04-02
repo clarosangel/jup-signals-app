@@ -68,11 +68,10 @@ export const RISK_RULES = {
   maxCollateralPercent: 0.20,
   maxSimultaneousPositions: 2,
   stopLossPercent: 0.015,
-  takeProfit1Percent: 0.01,
-  takeProfit2Percent: 0.02,
+  takeProfit1Percent: 0.02,  // IMPROVED: was 0.01
+  takeProfit2Percent: 0.04,  // IMPROVED: was 0.02
   maxDailyLoss: 150,
   maxConsecutiveLosses: 3,
   cooldownMinutes: 120,
-  feeRate: 0.0006, // 0.06% per side
+  feeRate: 0.0006,
 };
-

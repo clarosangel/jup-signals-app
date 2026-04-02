@@ -22,7 +22,7 @@ export interface PairPrice {
 
 export async function fetchPrices(): Promise<PairPrice[]> {
   const ids = Object.values(PAIR_IDS).map(p => p.coingecko).join(',');
-  const url = `${COINGECKO_BASE}/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true&include_market_cap=true&include_last_updated_at=true`;
+  const url = COINGECKO_BASE + '/simple/price?ids=' + ids + '&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true&include_market_cap=true&include_last_updated_at=true';
 
   try {
     const res = await fetch(url, { next: { revalidate: 30 } });
@@ -47,25 +47,37 @@ export async function fetchPrices(): Promise<PairPrice[]> {
   }
 }
 
-export async function fetchCandles(pair: string, days: number = 14): Promise<Candle[]> {
+// USE market_chart endpoint instead of OHLC — returns DAILY data points
+// /ohlc with days=365 only returns ~90 candles (4-day intervals)
+// /market_chart with days=365&interval=daily returns 365 daily candles
+export async function fetchCandles(pair: string, days: number = 365): Promise<Candle[]> {
   const pairInfo = PAIR_IDS[pair];
   if (!pairInfo) return [];
 
-  // CoinGecko OHLC endpoint
-  const url = `${COINGECKO_BASE}/coins/${pairInfo.coingecko}/ohlc?vs_currency=usd&days=${days}`;
+  const url = COINGECKO_BASE + '/coins/' + pairInfo.coingecko + '/market_chart?vs_currency=usd&days=' + days + '&interval=daily';
 
   try {
     const res = await fetch(url, { next: { revalidate: 60 } });
-    const data: number[][] = await res.json();
+    const data = await res.json();
 
-    return data.map(([time, open, high, low, close]) => ({
-      time,
-      open,
-      high,
-      low,
-      close,
-      volume: 0,
-    }));
+    // market_chart returns { prices: [[ts, price], ...], total_volumes: [[ts, vol], ...] }
+    if (!data.prices || !Array.isArray(data.prices)) return [];
+
+    const prices: number[][] = data.prices;
+    const volumes: number[][] = data.total_volumes || [];
+
+    return prices.map((item: number[], idx: number) => {
+      const [time, price] = item;
+      const vol = volumes[idx] ? volumes[idx][1] : 0;
+      return {
+        time,
+        open: price,
+        high: price,
+        low: price,
+        close: price,
+        volume: vol,
+      };
+    });
   } catch (err) {
     console.error('Candle fetch error:', err);
     return [];
@@ -110,11 +122,10 @@ export async function fetchMarketOverview(): Promise<MarketOverview> {
 
 async function fetchBTCDominance(): Promise<number> {
   try {
-    const res = await fetch(`${COINGECKO_BASE}/global`, { next: { revalidate: 300 } });
+    const res = await fetch(COINGECKO_BASE + '/global', { next: { revalidate: 300 } });
     const data = await res.json();
     return data.data?.market_cap_percentage?.btc || 0;
   } catch {
     return 0;
   }
 }
-
